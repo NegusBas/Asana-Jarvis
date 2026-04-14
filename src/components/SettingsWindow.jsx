@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 
 const TOOLS = [
-    { id: 'generate_cad', label: 'Generate CAD' },
     { id: 'run_web_agent', label: 'Web Agent' },
     { id: 'create_directory', label: 'Create Folder' },
     { id: 'write_file', label: 'Write File' },
@@ -13,9 +12,6 @@ const TOOLS = [
     { id: 'list_projects', label: 'List Projects' },
     { id: 'list_smart_devices', label: 'List Devices' },
     { id: 'control_light', label: 'Control Light' },
-    { id: 'discover_printers', label: 'Discover Printers' },
-    { id: 'print_stl', label: 'Print 3D Model' },
-    { id: 'iterate_cad', label: 'Iterate CAD' },
 ];
 
 const SettingsWindow = ({
@@ -40,12 +36,9 @@ const SettingsWindow = ({
     const [faceAuthEnabled, setFaceAuthEnabled] = useState(false);
 
     useEffect(() => {
-        // Request initial permissions
         socket.emit('get_settings');
 
-        // Listen for updates
         const handleSettings = (settings) => {
-            console.log("Received settings:", settings);
             if (settings) {
                 if (settings.tool_permissions) setPermissions(settings.tool_permissions);
                 if (typeof settings.face_auth_enabled !== 'undefined') {
@@ -56,28 +49,20 @@ const SettingsWindow = ({
         };
 
         socket.on('settings', handleSettings);
-        // Also listen for legacy tool_permissions if needed, but 'settings' covers it
-        // socket.on('tool_permissions', handlePermissions); 
-
         return () => {
             socket.off('settings', handleSettings);
         };
     }, [socket]);
 
     const togglePermission = (toolId) => {
-        const currentVal = permissions[toolId] !== false; // Default True
+        const currentVal = permissions[toolId] !== false; 
         const nextVal = !currentVal;
-
-        // Update local mostly for responsiveness, but socket roundtrip handles truth
-        // setPermissions(prev => ({ ...prev, [toolId]: nextVal }));
-
-        // Send update
         socket.emit('update_settings', { tool_permissions: { [toolId]: nextVal } });
     };
 
     const toggleFaceAuth = () => {
         const newVal = !faceAuthEnabled;
-        setFaceAuthEnabled(newVal); // Optimistic Update
+        setFaceAuthEnabled(newVal); 
         localStorage.setItem('face_auth_enabled', newVal);
         socket.emit('update_settings', { face_auth_enabled: newVal });
     };
@@ -97,7 +82,6 @@ const SettingsWindow = ({
                 </button>
             </div>
 
-            {/* Authentication Section */}
             <div className="mb-6">
                 <h3 className="text-cyan-400 font-bold mb-3 text-xs uppercase tracking-wider opacity-80">Security</h3>
                 <div className="flex items-center justify-between text-xs bg-gray-900/50 p-2 rounded border border-cyan-900/30">
@@ -113,7 +97,6 @@ const SettingsWindow = ({
                 </div>
             </div>
 
-            {/* Microphone Section */}
             <div className="mb-4">
                 <h3 className="text-cyan-400 font-bold mb-2 text-xs uppercase tracking-wider opacity-80">Microphone</h3>
                 <select
@@ -129,7 +112,6 @@ const SettingsWindow = ({
                 </select>
             </div>
 
-            {/* Speaker Section */}
             <div className="mb-4">
                 <h3 className="text-cyan-400 font-bold mb-2 text-xs uppercase tracking-wider opacity-80">Speaker</h3>
                 <select
@@ -145,7 +127,6 @@ const SettingsWindow = ({
                 </select>
             </div>
 
-            {/* Webcam Section */}
             <div className="mb-6">
                 <h3 className="text-cyan-400 font-bold mb-2 text-xs uppercase tracking-wider opacity-80">Webcam</h3>
                 <select
@@ -161,7 +142,6 @@ const SettingsWindow = ({
                 </select>
             </div>
 
-            {/* Cursor Section */}
             <div className="mb-6">
                 <div className="flex justify-between mb-2">
                     <h3 className="text-cyan-400 font-bold text-xs uppercase tracking-wider opacity-80">Cursor Sensitivity</h3>
@@ -178,7 +158,6 @@ const SettingsWindow = ({
                 />
             </div>
 
-            {/* Gesture Control Section */}
             <div className="mb-6">
                 <h3 className="text-cyan-400 font-bold mb-3 text-xs uppercase tracking-wider opacity-80">Gesture Control</h3>
                 <div className="flex items-center justify-between text-xs bg-gray-900/50 p-2 rounded border border-cyan-900/30">
@@ -194,12 +173,11 @@ const SettingsWindow = ({
                 </div>
             </div>
 
-            {/* Tool Permissions Section */}
             <div className="mb-6">
                 <h3 className="text-cyan-400 font-bold mb-3 text-xs uppercase tracking-wider opacity-80">Tool Confirmations</h3>
                 <div className="space-y-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
                     {TOOLS.map(tool => {
-                        const isRequired = permissions[tool.id] !== false; // Default True
+                        const isRequired = permissions[tool.id] !== false; 
                         return (
                             <div key={tool.id} className="flex items-center justify-between text-xs bg-gray-900/50 p-2 rounded border border-cyan-900/30">
                                 <span className="text-cyan-100/80">{tool.label}</span>
@@ -217,7 +195,6 @@ const SettingsWindow = ({
                 </div>
             </div>
 
-            {/* Memory Section */}
             <div>
                 <h3 className="text-cyan-400 font-bold mb-2 text-xs uppercase tracking-wider opacity-80">Memory Data</h3>
                 <div className="flex flex-col gap-2">
@@ -235,3 +212,4 @@ const SettingsWindow = ({
 };
 
 export default SettingsWindow;
+

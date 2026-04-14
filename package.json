@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && npx electron .\"",
     "build": "vite build",
-    "start": "npx electron ."
+    "start": "npx electron .",
+    "dist": "npm run build && electron-builder"
   },
   "keywords": [],
   "author": "",
@@ -31,9 +32,41 @@
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
     "electron": "^28.2.0",
+    "electron-builder": "^26.4.0",
     "postcss": "^8.4.35",
     "tailwindcss": "^3.4.1",
     "vite": "^5.1.0",
     "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.bas.asana",
+    "productName": "Asana AI",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Asana needs access to the microphone to hear your commands.",
+        "NSCameraUsageDescription": "Asana needs access to the camera for vision and hand tracking."
+      }
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/backend",
+        "to": "backend"
+      },
+      {
+        "from": "hand_landmarker.task",
+        "to": "." 
+      }
+    ]
   }
 }

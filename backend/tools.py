@@ -1,35 +1,14 @@
-generate_cad_prototype_tool = {
-    "name": "generate_cad_prototype",
-    "description": "Generates a 3D wireframe prototype based on a user's description. Use this when the user asks to 'visualize', 'prototype', 'create a wireframe', or 'design' something in 3D.",
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "prompt": {
-                "type": "STRING",
-                "description": "The user's description of the object to prototype."
-            }
-        },
-        "required": ["prompt"]
-    }
-}
+import os
 
-
-
-
+# --- FILE SYSTEM TOOLS ---
 write_file_tool = {
     "name": "write_file",
-    "description": "Writes content to a file at the specified path. Overwrites if exists.",
+    "description": "Writes content to a file in the project. Use this to save code, notes, or plans.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "path": {
-                "type": "STRING",
-                "description": "The path of the file to write to."
-            },
-            "content": {
-                "type": "STRING",
-                "description": "The content to write to the file."
-            }
+            "path": {"type": "STRING", "description": "The file path (relative to project root)."},
+            "content": {"type": "STRING", "description": "The text content to write."}
         },
         "required": ["path", "content"]
     }
@@ -37,14 +16,11 @@ write_file_tool = {
 
 read_directory_tool = {
     "name": "read_directory",
-    "description": "Lists the contents of a directory.",
+    "description": "Lists files and folders in a directory.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "path": {
-                "type": "STRING",
-                "description": "The path of the directory to list."
-            }
+            "path": {"type": "STRING", "description": "The directory path to read."}
         },
         "required": ["path"]
     }
@@ -56,17 +32,14 @@ read_file_tool = {
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "path": {
-                "type": "STRING",
-                "description": "The path of the file to read."
-            }
+            "path": {"type": "STRING", "description": "The path of the file to read."}
         },
         "required": ["path"]
     }
 }
 
+# Export the list
 tools_list = [{"function_declarations": [
-    generate_cad_prototype_tool,
     write_file_tool,
     read_directory_tool,
     read_file_tool

@@ -14,11 +14,16 @@ playwright
 # Smart Home
 python-kasa
 # 3D Printing
-zeroconf>=0.131.0
-aiohttp>=3.9.0
+
 # Utilities
 python-dotenv
+# Local Brain & British Voice
+openai
+edge-tts
+SpeechRecognition
+# Infrastructure Management
+docker
+psutil
 # Face & Hand tracking
 mediapipe
 # CAD Generation
-build123d
