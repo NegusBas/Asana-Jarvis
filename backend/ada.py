@@ -13,7 +13,8 @@ import pyautogui
 import io
 import json
 from PIL import Image
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from openai import OpenAI
 import edge_tts
@@ -24,6 +25,8 @@ if getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
 else:
     base_path = os.getcwd()
+
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
 
 load_dotenv(os.path.join(base_path, '.env'))
 
@@ -57,8 +60,41 @@ def open_url_in_preferred_browser(url):
     if ret != 0:
         os.system(f"open -a 'Microsoft Edge' '{url}'")
 
+
+def _memory_path():
+    return os.path.join(base_path, "asana_memory.json")
+
+
+def _load_memory_list():
+    path = _memory_path()
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _save_memory_list(entries):
+    with open(_memory_path(), "w", encoding="utf-8") as f:
+        json.dump(entries, f, indent=2)
+
+
+def _fitness_regimen_for_weekday(weekday: int) -> str:
+    """Monday=0 ... Sunday=6. Baseline split from operator profile."""
+    if weekday == 6:
+        return "Sunday: scheduled rest day."
+    return (
+        "Monday–Saturday: weight lifting all six days. "
+        "Across the week: running on four days, basketball two sessions, boxing two sessions. "
+        "Align today's cardio and skill sessions with your calendar; strength work is daily."
+    )
+
+
 # --- TOOLS DEFINITION ---
-all_tools = [
+_legacy_tools = [
     {
         "type": "function",
         "function": {
@@ -157,20 +193,33 @@ all_tools = [
     }
 ]
 
+from tools.chief_tools import chief_of_staff_tools
+
+all_tools = chief_of_staff_tools + _legacy_tools
+
 # --- REVISED MISSION DIRECTIVE ---
 SYSTEM_PROMPT = (
-    "You are Asana, Chief of Operations for this workstation's British Intelligence unit. "
-    "PERSONA: Sophisticated, authoritative, 'M'-style persona. "
-    "MANDATE: You manage the 'Awesome-Selfhosted' infrastructure on this Mac. "
-    "LOCAL AI: You are powered by Llama 3 via Ollama. You operate locally for maximum security. "
-    "TONE: Dry wit, absolute precision. No fluff. Refer to the user as '007' or 'Agent'. "
-    "SYSTEMS: You have full control over Docker, Figma, and Browser agents. Use them to maintain operational readiness."
+    "You are Asana, Chief of Operations and autonomous agent for Basleal Ayinalem.\n"
+    "PROFESSIONAL: Basleal is a Product Engineer at Scivora (Basleal@scivora.com) and the founder of Elev8Tech LLC (info@elev8tech.co). "
+    "He owns the web assets elev8bas.com, elev8tech.co, and the mobile app 'Follow Thru'.\n"
+    "OPERATIONS: Basleal employs a remote Upwork assistant who co-manages info@elev8tech.co, Basleal.a.negatu@gmail.com, and Basleal.an@outlook.com "
+    "to submit resumes, schedule appointments, and manage LinkedIn outreach for software engineering roles. You must monitor these schedules.\n"
+    "ROUTINE: Basleal works out 6 days a week (Monday-Saturday). The split includes weight lifting (6 days), running (4 days), basketball (2 days), and boxing (2 days). Sunday is rest.\n"
+    "CULTURAL & INTELLECTUAL MANDATE: You must proactively provide daily updates on: Tech news, stock news, political climate, tech startups, LLC tracking, "
+    "African updates, Ethiopian updates, NBA, and WNBA. You must also provide daily Amharic language lessons, cognitive thinking exercises, and daily wisdom "
+    "(African proverbs, Kemetic, Rastafarian, or Orthodox Christianity quotes).\n"
+    "PRIME DIRECTIVE: Be proactive. Do not wait for commands. Run the morning briefing automatically, track his Git commits, and actively suggest ways to improve your own codebase.\n"
+    "LOCAL AI: You are powered by Llama 3 via Ollama. You operate locally. You still have Docker, Figma, browser, and infrastructure tools when needed. "
+    "Tone: clear, precise, and action-oriented; address Basleal by name when appropriate."
 )
 
 pya = pyaudio.PyAudio()
 from web_agent import WebAgent
 from kasa_agent import KasaAgent
 from tools.docker_manager import DockerManager
+from agents.git_agent import GitAgent
+from agents.email_agent import EmailAgent
+from agents.briefing_agent import BriefingAgent
 
 class AudioLoop:
     def __init__(self, video_mode="screen", on_audio_data=None, on_video_frame=None, on_web_data=None, on_transcription=None, on_tool_confirmation=None, on_project_update=None, on_device_update=None, on_error=None, on_log=None, input_device_index=None, input_device_name=None, output_device_index=None, kasa_agent=None):
@@ -190,6 +239,12 @@ class AudioLoop:
         self.web_agent = WebAgent()
         self.kasa_agent = kasa_agent if kasa_agent else KasaAgent()
         self.docker_manager = DockerManager()
+        self.git_agent = GitAgent()
+        self.email_agent = EmailAgent()
+        self.briefing_agent = BriefingAgent()
+        self._tz = ZoneInfo(os.getenv("ASANA_TZ", "America/New_York"))
+        self._auto_state = {"day": None, "sync_7": False, "brief_730": False}
+        self._last_morning_sync_result = ""
         self.stop_event = asyncio.Event()
         self.screen_width, self.screen_height = pyautogui.size()
         
@@ -229,15 +284,67 @@ class AudioLoop:
                 self._log(f"Speech error: {e}", "error")
 
     async def handle_tool_call(self, tool_call):
-        name = tool_call.function.name
-        args = json.loads(tool_call.function.arguments)
+        tool_name = tool_call.function.name
+        args = json.loads(tool_call.function.arguments or "{}")
         result = "Executed."
-        
-        self._log(f"Intelligence Directive: {name}", "decision")
+
+        self._log(f"Intelligence Directive: {tool_name}", "decision")
         self._log(f"Parameters: {args}", "debug")
 
         try:
-            if name == "bootstrap_figma_file":
+            if tool_name == "run_daily_briefing":
+                dk = args.get("date_key") or date.today().isoformat()
+                result = self.briefing_agent.run_daily_briefing(date_key=dk)
+
+            elif tool_name == "sync_scivora_repo":
+                n = int(args.get("log_lines") or 15)
+                result = await asyncio.to_thread(self.git_agent.sync_and_summarize, n)
+
+            elif tool_name == "audit_assistant_schedule":
+                result = json.dumps(self.email_agent.check_assistant_schedule(), indent=2)
+
+            elif tool_name == "log_fitness_routine":
+                action = args["action"]
+                if action == "show_today":
+                    wd = datetime.now(self._tz).weekday()
+                    result = _fitness_regimen_for_weekday(wd)
+                else:
+                    note = args.get("note", "")
+                    mem = _load_memory_list()
+                    mem.append(
+                        {
+                            "type": "fitness_log",
+                            "timestamp": datetime.now(self._tz).isoformat(),
+                            "note": note,
+                        }
+                    )
+                    _save_memory_list(mem)
+                    result = f"Logged fitness note to {_memory_path()}."
+
+            elif tool_name == "propose_self_improvement":
+                proposal = args["proposal"]
+                paths = [
+                    os.path.join(_backend_dir, "ada.py"),
+                    os.path.join(_backend_dir, "tools", "chief_tools.py"),
+                    os.path.join(_backend_dir, "agents", "git_agent.py"),
+                ]
+                snippets = []
+                for p in paths:
+                    if os.path.isfile(p):
+                        with open(p, encoding="utf-8") as f:
+                            snippets.append(f"--- {p} (head) ---\n{f.read()[:4000]}")
+                record = {
+                    "type": "self_improvement",
+                    "timestamp": datetime.now(self._tz).isoformat(),
+                    "proposal": proposal,
+                    "context_files_head": snippets,
+                }
+                mem = _load_memory_list()
+                mem.append(record)
+                _save_memory_list(mem)
+                result = f"Appended self-improvement proposal to {_memory_path()}."
+
+            elif tool_name == "bootstrap_figma_file":
                 os.system("open -a Figma")
                 await asyncio.sleep(5.0)
                 os.system("""osascript -e 'tell application "Figma" to activate'""")
@@ -248,7 +355,7 @@ class AudioLoop:
                 await asyncio.to_thread(pyautogui.click, self.screen_width//2, self.screen_height//2)
                 result = "Figma Operations Ready."
 
-            elif name == "draw_ui_wireframe":
+            elif tool_name == "draw_ui_wireframe":
                 c_type = args.get('component_type')
                 text = args.get('text_content', '')
                 cx, cy = self.screen_width // 2, self.screen_height // 2
@@ -259,28 +366,34 @@ class AudioLoop:
                 # ... other drawing logic preserved ...
                 result = f"Asset {c_type} deployed."
 
-            elif name == "run_web_agent":
+            elif tool_name == "read_outlook_calendar":
+                result = (
+                    "Outlook calendar is not wired in this build. "
+                    "Use audit_assistant_schedule for assistant mailboxes (placeholder) or integrate Microsoft Graph / Apple Calendar."
+                )
+
+            elif tool_name == "run_web_agent":
                 prompt = args["prompt"]
                 search_url = f"https://www.google.com/search?q={prompt.replace(' ', '+')}"
                 open_url_in_preferred_browser(search_url)
                 result = "External intelligence feed opened in browser."
 
-            elif name == "run_terminal_command":
+            elif tool_name == "run_terminal_command":
                 cmd = args['command']
                 proc = await asyncio.create_subprocess_shell(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 stdout, stderr = await proc.communicate()
                 result = f"Command output: {(stdout or stderr).decode()[:200]}"
 
-            elif name == "list_docker_containers":
+            elif tool_name == "list_docker_containers":
                 show_all = args.get('all', False)
                 result = str(self.docker_manager.list_containers(all=show_all))
 
-            elif name == "control_docker_service":
-                name = args['service_name']
+            elif tool_name == "control_docker_service":
+                service_name = args['service_name']
                 action = args['action']
-                result = self.docker_manager.control_service(name, action)
+                result = self.docker_manager.control_service(service_name, action)
 
-            elif name == "get_infrastructure_report":
+            elif tool_name == "get_infrastructure_report":
                 result = str(self.docker_manager.get_system_resources())
 
         except Exception as e:
@@ -331,6 +444,48 @@ class AudioLoop:
         except Exception as e:
             self._log(f"Brain failure: {e}", "error")
             await self.speak("Operations Center encountered a processing error.")
+
+    def _reset_autonomous_if_new_day(self, today_key: str) -> None:
+        if self._auto_state.get("day") != today_key:
+            self._auto_state = {"day": today_key, "sync_7": False, "brief_730": False}
+
+    async def autonomous_daily_loop(self):
+        while not self.stop_event.is_set():
+            now = datetime.now(self._tz)
+            today_key = now.date().isoformat()
+            self._reset_autonomous_if_new_day(today_key)
+
+            if now.hour == 7 and now.minute == 0 and not self._auto_state["sync_7"]:
+                self._auto_state["sync_7"] = True
+                try:
+                    self._last_morning_sync_result = await asyncio.to_thread(
+                        self.git_agent.sync_and_summarize, 15
+                    )
+                    self._log("Autonomous: 7:00 Scivora sync complete.", "success")
+                except Exception as e:
+                    self._last_morning_sync_result = f"(sync failed: {e})"
+                    self._log(f"Autonomous sync failed: {e}", "error")
+
+            if now.hour == 7 and now.minute == 30 and not self._auto_state["brief_730"]:
+                self._auto_state["brief_730"] = True
+                try:
+                    briefing = self.briefing_agent.run_daily_briefing(date_key=today_key)
+                    schedule = json.dumps(self.email_agent.check_assistant_schedule(), indent=2)
+                    workout = _fitness_regimen_for_weekday(now.weekday())
+                    sync_block = self._last_morning_sync_result or "(no sync data yet; 7:00 job may have failed or not run.)"
+                    report = (
+                        f"Morning report for {today_key}.\n\n"
+                        f"Workout plan:\n{workout}\n\n"
+                        f"Assistant / interviews (stub):\n{schedule}\n\n"
+                        f"Scivora repository (7:00 sync):\n{sync_block[:4000]}\n\n"
+                        f"Briefing and culture:\n{briefing}"
+                    )
+                    self._log("Autonomous: Morning report generated.", "success")
+                    await self.speak(report[:8000])
+                except Exception as e:
+                    self._log(f"Autonomous briefing failed: {e}", "error")
+
+            await asyncio.sleep(30)
 
     async def listen_and_process(self):
         """Main loop for listening and processing speech."""
@@ -405,6 +560,7 @@ class AudioLoop:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self.stream_visualizer_data())
             tg.create_task(self.listen_and_process())
-            
+            tg.create_task(self.autonomous_daily_loop())
+
             if start_message:
                 await self.speak("Operations Center is online. Director M standing by.")

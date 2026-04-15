@@ -45,4 +45,6 @@ tools_list = [{"function_declarations": [
     read_file_tool
 ]}]
 
-
+# OpenAI / Ollama function specs for Asana live in the `tools` package (subdir) so
+# `import tools` resolves to backend/tools/ without conflicting with this file:
+#   from tools.chief_tools import chief_of_staff_tools

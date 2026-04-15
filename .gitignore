@@ -8,6 +8,7 @@ venv/
 env/
 
 # ADA Specific Local Data
+backend/asana_memory.json
 backend/reference.jpg
 backend/settings.json
 backend/last_cad_generation.json
