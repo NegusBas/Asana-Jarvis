@@ -1,18 +1,18 @@
 import os
-import time
 import asyncio
 import base64
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
-from google import genai
-from google.genai import types
+import google.genai as genai
 
 # 1. Load API Key
-load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_backend_dir)
+load_dotenv(os.path.join(_project_root, ".env"))
+API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 if not API_KEY:
-    raise ValueError("Please set GEMINI_API_KEY in your .env file")
+    raise ValueError("Please set GEMINI_API_KEY (or GOOGLE_API_KEY) in your .env file")
 
 # 2. Configuration
 SCREEN_WIDTH = 1280
@@ -29,10 +29,21 @@ class WebAgent:
 
     async def run_task(self, prompt, update_callback=None):
         print(f"[WebAgent] Starting task: {prompt}")
-        
+        summary = ""
+
         async with async_playwright() as p:
-            # HEADLESS=FALSE MEANS YOU SEE THE BROWSER!
-            self.browser = await p.chromium.launch(headless=False)
+            prompt_l = prompt.lower()
+            use_chrome = "chrome" in prompt_l
+            # Safari automation is not directly supported by Playwright; use Chrome if requested,
+            # otherwise Chromium. If Chrome channel is unavailable, fallback to Chromium.
+            try:
+                self.browser = await p.chromium.launch(
+                    headless=False,
+                    channel="chrome" if use_chrome else None,
+                )
+            except Exception:
+                self.browser = await p.chromium.launch(headless=False)
+
             self.context = await self.browser.new_context(
                 viewport={"width": SCREEN_WIDTH, "height": SCREEN_HEIGHT}
             )
@@ -62,23 +73,52 @@ class WebAgent:
                     await self.page.press("textarea[name='q']", "Enter")
 
                 # Wait for results to load
-                await asyncio.sleep(2)
+                await asyncio.sleep(2.5)
                 
                 # Take a screenshot to show the user what happened
                 screenshot_bytes = await self.page.screenshot(type="jpeg")
+                page_title = await self.page.title()
                 if update_callback:
                     b64_img = base64.b64encode(screenshot_bytes).decode('utf-8')
-                    title = await self.page.title()
-                    await update_callback(b64_img, f"Navigated to: {title}")
+                    await update_callback(b64_img, f"Navigated to: {page_title}")
+
+                # Read page text and ask Gemini to produce a concise factual summary.
+                page_text = await self.page.evaluate("() => document.body?.innerText || ''")
+                page_text = " ".join(page_text.split())
+                if len(page_text) > 12000:
+                    page_text = page_text[:12000]
+
+                browser_note = (
+                    "Chrome mode requested." if use_chrome
+                    else "Chromium mode used. (Safari direct automation is not supported by Playwright.)"
+                )
+
+                gemini_prompt = (
+                    "You are extracting factual web results.\n"
+                    f"User request: {prompt}\n"
+                    f"Page title: {page_title}\n"
+                    f"{browser_note}\n\n"
+                    "Based only on this page text, provide:\n"
+                    "1) Direct answer in 2-4 bullets.\n"
+                    "2) If asking for scores/news, include the teams or headline names and dates visible.\n"
+                    "3) If the page lacks enough info, say what is missing.\n\n"
+                    f"Page text:\n{page_text}"
+                )
+                response = self.client.models.generate_content(
+                    model=MODEL_ID,
+                    contents=gemini_prompt,
+                )
+                summary = getattr(response, "text", "") or "No Gemini summary was produced."
 
                 # Keep browser open for a few seconds so you can see it
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
 
             except Exception as e:
                 print(f"[WebAgent] Error: {e}")
+                summary = f"Web task failed: {e}"
             
             await self.browser.close()
-            return "Task completed."
+            return summary
 
 if __name__ == "__main__":
     agent = WebAgent()

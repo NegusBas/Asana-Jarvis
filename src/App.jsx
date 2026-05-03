@@ -14,7 +14,14 @@ import AuthLock from './components/AuthLock';
 import KasaWindow from './components/KasaWindow';
 import SettingsWindow from './components/SettingsWindow';
 
-const socket = io('http://localhost:8000');
+const BACKEND_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BACKEND_URL) || 'http://localhost:8000';
+const socket = io(BACKEND_URL, {
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: 20,
+    transports: ['websocket', 'polling'],
+});
 const { ipcRenderer } = window.require('electron');
 
 function App() {
@@ -33,7 +40,7 @@ function App() {
         return localStorage.getItem('face_auth_enabled') === 'true';
     });
 
-    const [isConnected, setIsConnected] = useState(true); 
+    const [isConnected, setIsConnected] = useState(false);
     const [isMuted, setIsMuted] = useState(true); 
     const [isVideoOn, setIsVideoOn] = useState(false); 
     const [messages, setMessages] = useState([]);
@@ -235,11 +242,13 @@ function App() {
         socket.on('connect', () => {
             setStatus('Connected');
             setSocketConnected(true);
+            setIsConnected(true);
             socket.emit('get_settings');
         });
         socket.on('disconnect', () => {
             setStatus('Disconnected');
             setSocketConnected(false);
+            setIsConnected(false);
         });
         socket.on('status', (data) => {
             addMessage('System', data.msg);

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import os
 import sys
+import tempfile
 import traceback
 import cv2
 import pyaudio
@@ -12,6 +13,8 @@ import subprocess
 import pyautogui
 import io
 import json
+import csv
+from typing import Optional
 from PIL import Image
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -41,8 +44,13 @@ LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1")
 BRITISH_VOICE = "en-GB-SoniaNeural" # Concise, professional British voice
 
 # --- TUNING SETTINGS ---
-VAD_THRESHOLD = 1200  
-SILENCE_DURATION = 1.2 
+VAD_THRESHOLD = 1200
+SILENCE_DURATION = 1.2
+# Max seconds per speech chunk for Google SR (higher = less cut-off mid-sentence).
+PHRASE_TIME_LIMIT = float(os.getenv("ASANA_PHRASE_SEC", "30"))
+LISTEN_TIMEOUT = float(os.getenv("ASANA_LISTEN_TIMEOUT", "8"))
+# Cap voice output length (TTS only; model context unchanged).
+SPEAK_MAX_CHARS = int(os.getenv("ASANA_MAX_SPEAK_CHARS", "4500"))
 
 pyautogui.FAILSAFE = True 
 
@@ -91,6 +99,74 @@ def _fitness_regimen_for_weekday(weekday: int) -> str:
         "Across the week: running on four days, basketball two sessions, boxing two sessions. "
         "Align today's cardio and skill sessions with your calendar; strength work is daily."
     )
+
+
+def _resolve_budget_path(custom_path: Optional[str]) -> Optional[str]:
+    candidates = []
+    if custom_path:
+        candidates.append(custom_path)
+    candidates.extend(["budget.csv", "budget.json"])
+    for c in candidates:
+        abs_path = c if os.path.isabs(c) else os.path.join(base_path, c)
+        if os.path.isfile(abs_path):
+            return abs_path
+    return None
+
+
+def _analyze_budget_file(path: str) -> dict:
+    _, ext = os.path.splitext(path.lower())
+    if ext == ".json":
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        rows = data.get("items", data) if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            return {"status": "error", "message": "Unsupported budget.json format."}
+    elif ext == ".csv":
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    else:
+        return {"status": "error", "message": "Unsupported budget file extension."}
+
+    total_income = 0.0
+    total_expense = 0.0
+    category_expenses: dict = {}
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        kind = str(r.get("type", "")).strip().lower()
+        category = str(r.get("category", "uncategorized")).strip() or "uncategorized"
+        amount_raw = r.get("amount", 0)
+        try:
+            amount = float(amount_raw)
+        except (TypeError, ValueError):
+            continue
+
+        if kind in ("income", "revenue"):
+            total_income += amount
+        elif kind in ("expense", "cost"):
+            total_expense += amount
+            category_expenses[category] = category_expenses.get(category, 0.0) + amount
+        else:
+            if amount >= 0:
+                total_income += amount
+            else:
+                total_expense += abs(amount)
+                category_expenses[category] = category_expenses.get(category, 0.0) + abs(amount)
+
+    net = total_income - total_expense
+    top_expenses = sorted(category_expenses.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    return {
+        "status": "ok",
+        "path": path,
+        "income_total": round(total_income, 2),
+        "expense_total": round(total_expense, 2),
+        "net": round(net, 2),
+        "top_expense_categories": [
+            {"category": k, "amount": round(v, 2)} for k, v in top_expenses
+        ],
+    }
 
 
 # --- TOOLS DEFINITION ---
@@ -220,6 +296,8 @@ from tools.docker_manager import DockerManager
 from agents.git_agent import GitAgent
 from agents.email_agent import EmailAgent
 from agents.briefing_agent import BriefingAgent
+from agents.skill_manager import SkillManager
+from agents.calendar_agent import CalendarAgent
 
 class AudioLoop:
     def __init__(self, video_mode="screen", on_audio_data=None, on_video_frame=None, on_web_data=None, on_transcription=None, on_tool_confirmation=None, on_project_update=None, on_device_update=None, on_error=None, on_log=None, input_device_index=None, input_device_name=None, output_device_index=None, kasa_agent=None):
@@ -242,18 +320,35 @@ class AudioLoop:
         self.git_agent = GitAgent()
         self.email_agent = EmailAgent()
         self.briefing_agent = BriefingAgent()
+        self.skill_manager = SkillManager(chief_of_staff_prompt=SYSTEM_PROMPT)
+        self.calendar_agent = CalendarAgent()
         self._tz = ZoneInfo(os.getenv("ASANA_TZ", "America/New_York"))
         self._auto_state = {"day": None, "sync_7": False, "brief_730": False}
         self._last_morning_sync_result = ""
         self.stop_event = asyncio.Event()
         self.screen_width, self.screen_height = pyautogui.size()
-        
+
+        # Block the mic listener while TTS plays (avoids echo and talking over the user).
+        self._listen_allowed = asyncio.Event()
+        self._listen_allowed.set()
+        self._speak_lock = asyncio.Lock()
+
         self.recognizer = sr.Recognizer()
+        # Seconds of silence before a phrase is considered complete (default SR is 0.8).
+        self.recognizer.pause_threshold = float(
+            os.getenv("ASANA_PAUSE_THRESHOLD", str(max(SILENCE_DURATION, 1.0)))
+        )
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.is_speaking = False
+        self._pending_confirmations: dict = {}
 
     def _log(self, text, type="info"):
         if self.on_log: self.on_log({"text": text, "type": type, "time": datetime.now().strftime("%H:%M:%S")})
+
+    def resolve_tool_confirmation(self, tool_id: str, confirmed: bool):
+        future = self._pending_confirmations.pop(tool_id, None)
+        if future and not future.done():
+            future.set_result(confirmed)
 
     def set_paused(self, paused):
         self.paused = paused
@@ -263,25 +358,53 @@ class AudioLoop:
 
     async def speak(self, text):
         """Generates British voice using edge-tts."""
-        self._log(f"M responding: {text}", "result")
-        communicate = edge_tts.Communicate(text, BRITISH_VOICE)
-        audio_data = b""
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_data += chunk["data"]
-        
-        # Play via pyaudio
-        if audio_data:
-            # Note: edge-tts returns mp3 data by default. We need to play it or decode it.
-            # Simplified: write to temp file and play via subprocess or decode.
-            # For robustness in this environment, we'll pipe to a player.
+        if not (text and str(text).strip()):
+            return
+
+        spoken = str(text).strip()
+        if len(spoken) > SPEAK_MAX_CHARS:
+            spoken = spoken[:SPEAK_MAX_CHARS].rstrip() + " …I'll pause there; say continue if you need the rest."
+            self._log("Voice output trimmed (ASANA_MAX_SPEAK_CHARS).", "info")
+
+        preview = spoken if len(spoken) <= 2000 else spoken[:2000] + "…"
+        self._log(f"M responding: {preview}", "result")
+
+        async with self._speak_lock:
+            self._listen_allowed.clear()
+            self.is_speaking = True
             try:
-                process = await asyncio.create_subprocess_shell(
-                    "afplay -", stdin=asyncio.subprocess.PIPE
-                )
-                await process.communicate(input=audio_data)
-            except Exception as e:
-                self._log(f"Speech error: {e}", "error")
+                communicate = edge_tts.Communicate(spoken, BRITISH_VOICE)
+                audio_data = b""
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_data += chunk["data"]
+
+                if audio_data:
+                    path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                            tmp.write(audio_data)
+                            path = tmp.name
+                        proc = await asyncio.create_subprocess_exec(
+                            "afplay",
+                            path,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await proc.wait()
+                        if proc.returncode != 0:
+                            self._log(f"afplay exited with code {proc.returncode}", "error")
+                    except Exception as e:
+                        self._log(f"Speech error: {e}", "error")
+                    finally:
+                        if path:
+                            try:
+                                os.unlink(path)
+                            except OSError:
+                                pass
+            finally:
+                self.is_speaking = False
+                self._listen_allowed.set()
 
     async def handle_tool_call(self, tool_call):
         tool_name = tool_call.function.name
@@ -344,6 +467,44 @@ class AudioLoop:
                 _save_memory_list(mem)
                 result = f"Appended self-improvement proposal to {_memory_path()}."
 
+            elif tool_name == "switch_persona":
+                persona = args["persona"]
+                self.messages[0]["content"] = self.skill_manager.set_active_persona(persona)
+                result = f"Active persona is now '{persona}'."
+
+            elif tool_name == "get_calendar_events":
+                days = int(args.get("days") or 7)
+                cal_out = self.calendar_agent.get_upcoming_events(days=days)
+                result = (
+                    cal_out
+                    if isinstance(cal_out, str)
+                    else json.dumps(cal_out, indent=2)
+                )
+
+            elif tool_name == "analyze_budget":
+                requested_path = args.get("path")
+                budget_path = _resolve_budget_path(requested_path)
+                if not budget_path:
+                    result = json.dumps(
+                        {
+                            "status": "not_found",
+                            "message": "No budget.csv or budget.json found; pass path or add file at project root.",
+                        },
+                        indent=2,
+                    )
+                else:
+                    analysis = _analyze_budget_file(budget_path)
+                    mem = _load_memory_list()
+                    mem.append(
+                        {
+                            "type": "budget_insight",
+                            "timestamp": datetime.now(self._tz).isoformat(),
+                            "analysis": analysis,
+                        }
+                    )
+                    _save_memory_list(mem)
+                    result = json.dumps(analysis, indent=2)
+
             elif tool_name == "bootstrap_figma_file":
                 os.system("open -a Figma")
                 await asyncio.sleep(5.0)
@@ -374,9 +535,14 @@ class AudioLoop:
 
             elif tool_name == "run_web_agent":
                 prompt = args["prompt"]
-                search_url = f"https://www.google.com/search?q={prompt.replace(' ', '+')}"
-                open_url_in_preferred_browser(search_url)
-                result = "External intelligence feed opened in browser."
+                # Route through Playwright + Gemini web agent and return facts to voice output.
+                result = await self.web_agent.run_task(
+                    prompt,
+                    update_callback=(
+                        (lambda image_b64, log: self.on_web_data({"image": image_b64, "log": log}))
+                        if self.on_web_data else None
+                    ),
+                )
 
             elif tool_name == "run_terminal_command":
                 cmd = args['command']
@@ -403,6 +569,14 @@ class AudioLoop:
         return result
 
     async def process_interaction(self, user_text):
+        _, meta = self.skill_manager.get_persona_and_tools(user_text)
+        inferred_persona = meta["persona"]
+        if inferred_persona != self.skill_manager.active_persona:
+            self.messages[0]["content"] = self.skill_manager.set_active_persona(
+                inferred_persona
+            )
+            self._log(f"Persona routed by intent: {inferred_persona}", "decision")
+
         self.messages.append({"role": "user", "content": user_text})
         self._log(f"User Directive: {user_text}", "user")
 
@@ -497,13 +671,16 @@ class AudioLoop:
                 if self.paused:
                     await asyncio.sleep(0.5)
                     continue
-                
+
+                await self._listen_allowed.wait()
+
                 try:
-                    # Capture a small snippet for visualizer/VAD
-                    # To keep it simple and responsive, we'll use sr.listen but 
-                    # we could also have a separate task for visualizer data.
-                    # For now, let's just listen.
-                    audio = await asyncio.to_thread(self.recognizer.listen, source, timeout=5, phrase_time_limit=10)
+                    audio = await asyncio.to_thread(
+                        self.recognizer.listen,
+                        source,
+                        timeout=LISTEN_TIMEOUT,
+                        phrase_time_limit=PHRASE_TIME_LIMIT,
+                    )
                     
                     # Send feedback to frontend that we are processing
                     if self.on_audio_data:
@@ -555,12 +732,12 @@ class AudioLoop:
 
     async def run(self, start_message=None):
         self._log("Initializing Local Intelligence (Ollama)...", "info")
-        
-        # Create visualizer and listening tasks
+
+        # Speak before opening the mic loop so startup TTS is not picked up as user speech.
+        if start_message:
+            await self.speak("Operations Center is online. Director M standing by.")
+
         async with asyncio.TaskGroup() as tg:
             tg.create_task(self.stream_visualizer_data())
             tg.create_task(self.listen_and_process())
             tg.create_task(self.autonomous_daily_loop())
-
-            if start_message:
-                await self.speak("Operations Center is online. Director M standing by.")

@@ -65,7 +65,11 @@
       },
       {
         "from": "hand_landmarker.task",
-        "to": "." 
+        "to": "."
+      },
+      {
+        "from": ".env",
+        "to": ".env"
       }
     ]
   }

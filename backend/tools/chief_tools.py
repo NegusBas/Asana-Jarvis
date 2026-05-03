@@ -77,4 +77,60 @@ chief_of_staff_tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_persona",
+            "description": "Switches Asana's active persona/skill mode (Chief of Staff, Developer, UX, Finance, Marketer).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "persona": {
+                        "type": "string",
+                        "enum": [
+                            "chief_of_staff",
+                            "developer",
+                            "ux_ui_designer",
+                            "entrepreneur_finance",
+                            "marketer",
+                        ],
+                        "description": "Target persona key.",
+                    }
+                },
+                "required": ["persona"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_calendar_events",
+            "description": "Fetches upcoming events from CalendarAgent (Google Calendar stub).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {
+                        "type": "integer",
+                        "description": "Days to look ahead (default 7).",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_budget",
+            "description": "Reads local budget.csv or budget.json and returns financial summaries.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Optional path; defaults to budget.csv then budget.json under project root.",
+                    }
+                },
+            },
+        },
+    },
 ]

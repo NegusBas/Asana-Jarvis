@@ -46,6 +46,10 @@ SETTINGS = {
 async def status_check():
     return {"status": "running", "service": "ASANA Backend"}
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
 @app.on_event("startup")
 async def startup_event():
     print("[ASANA] Initializing Kasa Agent...")
@@ -134,15 +138,15 @@ async def resume_audio(sid):
 
 @sio.event
 async def user_input(sid, data):
-    if audio_loop and audio_loop.session:
+    if audio_loop:
         print(f"User Input: {data['text']}")
-        await audio_loop.session.send(input=data['text'], end_of_turn=True)
+        asyncio.create_task(audio_loop.process_interaction(data['text']))
 
 @sio.event
 async def confirm_tool(sid, data):
     if audio_loop:
         print(f"Tool Confirmation: {data}")
-        audio_loop.resolve_tool_confirmation(data['id'], data['confirmed'])
+        audio_loop.resolve_tool_confirmation(data.get('id', ''), data.get('confirmed', False))
 
 @sio.event
 async def discover_kasa(sid):
@@ -178,4 +182,16 @@ async def update_settings(sid, data):
     await sio.emit('settings', SETTINGS)
 
 if __name__ == "__main__":
-    uvicorn.run("server:app_socketio", host="127.0.0.1", port=8000, reload=True)
+    is_frozen = getattr(sys, 'frozen', False)
+    uvicorn.run(
+        "server:app_socketio",
+        host="127.0.0.1",
+        port=8000,
+        reload=not is_frozen,
+        reload_excludes=[
+            "resources",
+            "**/resources/**",
+            "**/__pycache__/**",
+            "**/*.pyc",
+        ],
+    )

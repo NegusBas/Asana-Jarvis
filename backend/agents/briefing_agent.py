@@ -40,9 +40,15 @@ class BriefingAgent:
 
     def fetch_feed_titles(self, url: str, limit: int = 5) -> List[str]:
         req = urllib.request.Request(url, headers={"User-Agent": "AsanaBriefingBot/1.0"})
-        with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
-            raw = resp.read()
-        root = ET.fromstring(raw)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
+                raw = resp.read()
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch feed: {e}") from e
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError as e:
+            raise RuntimeError(f"Invalid RSS XML: {e}") from e
         titles: List[str] = []
         for el in root.iter():
             if el.tag.endswith("item") or el.tag == "item":

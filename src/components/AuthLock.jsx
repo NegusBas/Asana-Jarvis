@@ -1,10 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { Lock, Unlock, User } from 'lucide-react';
+import React, { useEffect, useState, useRef } from 'react';
+import { Lock, Unlock, User, AlertTriangle } from 'lucide-react';
 
 const AuthLock = ({ socket, onAuthenticated, onAnimationComplete }) => {
     const [frameSrc, setFrameSrc] = useState(null);
     const [message, setMessage] = useState("Initializing Security...");
     const [isUnlocking, setIsUnlocking] = useState(false);
+    const [timedOut, setTimedOut] = useState(false);
+    const timeoutRef = useRef(null);
+
+    useEffect(() => {
+        // If backend is unreachable, allow the user to skip after 15 seconds
+        timeoutRef.current = setTimeout(() => {
+            setTimedOut(true);
+            setMessage("Backend unreachable. Click below to skip.");
+        }, 15000);
+        return () => clearTimeout(timeoutRef.current);
+    }, []);
 
     useEffect(() => {
         if (!socket) return;
@@ -12,20 +23,20 @@ const AuthLock = ({ socket, onAuthenticated, onAnimationComplete }) => {
         const handleAuthStatus = (data) => {
             console.log("Auth Status:", data);
             if (data.authenticated && !isUnlocking) {
-                // Start Unlock Sequence
+                clearTimeout(timeoutRef.current);
                 setIsUnlocking(true);
                 setMessage("Identity Verified. Access Granted.");
-
-                // Wait for animation then notify parent
                 setTimeout(() => {
                     onAuthenticated(true);
-                }, 2000); // 2 seconds animation
+                }, 2000);
             } else if (!data.authenticated && !isUnlocking) {
                 setMessage("Look at the camera to unlock.");
             }
         };
 
         const handleAuthFrame = (data) => {
+            clearTimeout(timeoutRef.current);
+            setTimedOut(false);
             setFrameSrc(`data:image/jpeg;base64,${data.image}`);
         };
 
@@ -86,9 +97,19 @@ const AuthLock = ({ socket, onAuthenticated, onAnimationComplete }) => {
                     )}
                 </div>
 
-                <div className={`text-sm tracking-widest ${isUnlocking ? 'text-green-300' : 'text-cyan-300'} animate-pulse transition-colors duration-500`}>
+                <div className={`text-sm tracking-widest ${isUnlocking ? 'text-green-300' : timedOut ? 'text-yellow-400' : 'text-cyan-300'} animate-pulse transition-colors duration-500`}>
                     {message}
                 </div>
+
+                {timedOut && (
+                    <button
+                        onClick={() => onAuthenticated(true)}
+                        className="flex items-center gap-2 px-4 py-2 border border-yellow-500/50 rounded text-yellow-400 text-xs tracking-widest hover:bg-yellow-500/10 transition-colors"
+                    >
+                        <AlertTriangle size={14} />
+                        SKIP AUTHENTICATION
+                    </button>
+                )}
             </div>
 
             {/* Keyframe for scan animation */}

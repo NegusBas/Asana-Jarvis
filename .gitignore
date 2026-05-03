@@ -29,6 +29,14 @@ dist-electron/
 release/
 out/
 
+# Compiled binaries and build artifacts (never commit to git)
+resources/
+build/
+Buslyl./
+basleal/
+*.dmg
+*.blockmap
+
 # IDE
 .vscode/
 .idea/
@@ -36,3 +44,8 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+
+backend/credentials.json
+backend/token.json
+
